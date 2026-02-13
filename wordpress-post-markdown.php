@@ -1,10 +1,12 @@
 <?php
 /**
- * Plugin Name: WordPress Post Markdown
+ * Plugin Name: Handbro Post Markdown
  * Description: 當 client 請求可接受 markdown 格式時，將 wordpress 文章轉換為 markdown 格式輸出。
  * Version: 0.1.0
  * Author: 手哥
  * Author URI: https://handbro.pro
+ * License: GPLv2 or later
+ * License URI: https://www.gnu.org/licenses/gpl-2.0.html
  */
 
 if (!defined('ABSPATH')) {
