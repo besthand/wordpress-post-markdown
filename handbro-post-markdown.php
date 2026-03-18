@@ -1,8 +1,8 @@
 <?php
 /**
- * Plugin Name: Handbro Post Markdown
- * Description: 當 client 請求可接受 markdown 格式時，將 wordpress 文章轉換為 markdown 格式輸出。
- * Version: 0.1.0
+ * Plugin Name: Soft4fun Post Markdown
+ * Description: 透過 /llmtxt 網址後綴，將 WordPress 文章轉換為 Markdown 格式輸出。
+ * Version: 0.1.1
  * Author: 手哥
  * Author URI: https://handbro.pro
  * License: GPLv2 or later
@@ -13,17 +13,45 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-final class Handbro_Post_Markdown {
-    public static function init(): void {
+final class Handbro_Post_Markdown
+{
+    public static function init(): void
+    {
+        add_action('init', array(__CLASS__, 'register_rewrites'));
+        add_action('wp_head', array(__CLASS__, 'add_head_link_alternate'));
         add_action('template_redirect', array(__CLASS__, 'maybe_render_markdown'), 0);
     }
 
-    public static function maybe_render_markdown(): void {
+    public static function register_rewrites(): void
+    {
+        add_rewrite_endpoint('llmtxt', EP_PERMALINK | EP_PAGES);
+    }
+
+    public static function add_head_link_alternate(): void
+    {
+        if (!is_singular()) {
+            return;
+        }
+
+        global $wp_rewrite;
+        $url = get_permalink();
+        if ($wp_rewrite->using_permalinks()) {
+            $url = user_trailingslashit(trailingslashit($url) . 'llmtxt');
+        }
+        else {
+            $url = add_query_arg('llmtxt', '', $url);
+        }
+
+        echo '<link rel="alternate" type="text/markdown" href="' . esc_url($url) . '">' . "\n";
+    }
+
+    public static function maybe_render_markdown(): void
+    {
         if (is_admin() || wp_doing_ajax() || wp_doing_cron()) {
             return;
         }
 
-        if (!self::wants_markdown()) {
+        if (get_query_var('llmtxt', null) === null) {
             return;
         }
 
@@ -45,30 +73,22 @@ final class Handbro_Post_Markdown {
 
         nocache_headers();
         header('Vary: Accept', false);
-        header('Content-Type: text/markdown; charset=' . get_bloginfo('charset'));
+        header('Content-Type: text/markdown; charset=utf-8');
         status_header(200);
 
+        // 輸出 UTF-8 BOM，強制使瀏覽器不管副檔名都能正確識別 UTF-8
+        echo "\xEF\xBB\xBF";
         echo $markdown;
         exit;
     }
-
-    private static function wants_markdown(): bool {
-        $accept = isset($_SERVER['HTTP_ACCEPT']) ? (string) $_SERVER['HTTP_ACCEPT'] : '';
-
-        if ('' === $accept) {
-            return false;
-        }
-
-        return false !== stripos($accept, 'text/markdown');
-    }
-
-    private static function build_markdown(WP_Post $post): string {
+    private static function build_markdown(WP_Post $post): string
+    {
         $title = 'title: ' . self::clean_inline_text(get_the_title($post));
         $meta_sections = array();
 
         if (has_excerpt($post)) {
             $excerpt_html = wp_kses_post(get_the_excerpt($post));
-            $excerpt_md   = trim(self::html_to_markdown($excerpt_html));
+            $excerpt_md = trim(self::html_to_markdown($excerpt_html));
 
             if ('' !== $excerpt_md) {
                 $meta_sections[] = "**摘要**\n\n" . $excerpt_md;
@@ -110,7 +130,8 @@ final class Handbro_Post_Markdown {
         return implode("\n\n", $sections) . "\n";
     }
 
-    private static function taxonomy_lines(int $post_id, string $taxonomy): array {
+    private static function taxonomy_lines(int $post_id, string $taxonomy): array
+    {
         $terms = get_the_terms($post_id, $taxonomy);
 
         if (empty($terms) || is_wp_error($terms)) {
@@ -132,7 +153,8 @@ final class Handbro_Post_Markdown {
         return $lines;
     }
 
-    private static function custom_taxonomy_section(WP_Post $post): string {
+    private static function custom_taxonomy_section(WP_Post $post): string
+    {
         $taxonomy_objects = get_object_taxonomies($post->post_type, 'objects');
 
         if (empty($taxonomy_objects)) {
@@ -182,40 +204,44 @@ final class Handbro_Post_Markdown {
         return "**自訂 Taxonomy**\n\n" . implode("\n\n", $chunks);
     }
 
-    private static function image_lines(WP_Post $post, string $content_html): array {
+    private static function image_lines(WP_Post $post, string $content_html): array
+    {
         $images = array();
 
         if (has_post_thumbnail($post)) {
-            $thumb_id = (int) get_post_thumbnail_id($post);
+            $thumb_id = (int)get_post_thumbnail_id($post);
             $thumb_url = wp_get_attachment_image_url($thumb_id, 'full');
 
             if ($thumb_url) {
-                $thumb_alt = trim((string) get_post_meta($thumb_id, '_wp_attachment_image_alt', true));
-                $thumb_title = trim((string) get_the_title($thumb_id));
+                $thumb_alt = trim((string)get_post_meta($thumb_id, '_wp_attachment_image_alt', true));
+                $thumb_title = trim((string)get_the_title($thumb_id));
                 self::add_image_meta($images, $thumb_url, $thumb_alt, $thumb_title);
             }
         }
 
         if (class_exists('DOMDocument')) {
             $doc = new DOMDocument();
-            $wrapped_html = '<!DOCTYPE html><html><body>' . $content_html . '</body></html>';
+            $wrapped_html = '<!DOCTYPE html><html><head><meta http-equiv="Content-Type" content="text/html; charset=utf-8"></head><body>' . $content_html . '</body></html>';
+            if (function_exists('mb_encode_numericentity')) {
+                $wrapped_html = mb_encode_numericentity($wrapped_html, array(0x80, 0x10FFFF, 0, ~0), 'UTF-8');
+            }
 
             libxml_use_internal_errors(true);
-            $loaded = $doc->loadHTML('<?xml encoding="utf-8" ?>' . $wrapped_html);
+            $loaded = $doc->loadHTML($wrapped_html, LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD);
             libxml_clear_errors();
 
             if ($loaded) {
                 $image_nodes = $doc->getElementsByTagName('img');
 
                 foreach ($image_nodes as $image_node) {
-                    $src = trim((string) $image_node->getAttribute('src'));
+                    $src = trim((string)$image_node->getAttribute('src'));
 
                     if ('' === $src) {
                         continue;
                     }
 
-                    $alt = trim((string) $image_node->getAttribute('alt'));
-                    $title = trim((string) $image_node->getAttribute('title'));
+                    $alt = trim((string)$image_node->getAttribute('alt'));
+                    $title = trim((string)$image_node->getAttribute('title'));
                     self::add_image_meta($images, $src, $alt, $title);
                 }
             }
@@ -230,7 +256,8 @@ final class Handbro_Post_Markdown {
         return $lines;
     }
 
-    private static function html_to_markdown(string $html): string {
+    private static function html_to_markdown(string $html): string
+    {
         if ('' === trim($html)) {
             return '';
         }
@@ -240,10 +267,13 @@ final class Handbro_Post_Markdown {
         }
 
         $doc = new DOMDocument();
-        $wrapped_html = '<!DOCTYPE html><html><body><div id="wpmd-root">' . $html . '</div></body></html>';
+        $wrapped_html = '<!DOCTYPE html><html><head><meta http-equiv="Content-Type" content="text/html; charset=utf-8"></head><body><div id="wpmd-root">' . $html . '</div></body></html>';
+        if (function_exists('mb_encode_numericentity')) {
+            $wrapped_html = mb_encode_numericentity($wrapped_html, array(0x80, 0x10FFFF, 0, ~0), 'UTF-8');
+        }
 
         libxml_use_internal_errors(true);
-        $loaded = $doc->loadHTML('<?xml encoding="utf-8" ?>' . $wrapped_html);
+        $loaded = $doc->loadHTML($wrapped_html, LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD);
         libxml_clear_errors();
 
         if (!$loaded) {
@@ -258,12 +288,13 @@ final class Handbro_Post_Markdown {
         }
 
         $output = trim(self::convert_children_to_markdown($nodes->item(0), 0));
-        $output = preg_replace("/\n{3,}/", "\n\n", $output);
+        $output = preg_replace("/\n{3,}/u", "\n\n", $output);
 
-        return trim((string) $output);
+        return trim((string)$output);
     }
 
-    private static function convert_children_to_markdown(DOMNode $node, int $depth): string {
+    private static function convert_children_to_markdown(DOMNode $node, int $depth): string
+    {
         $content = '';
 
         foreach ($node->childNodes as $child) {
@@ -273,7 +304,8 @@ final class Handbro_Post_Markdown {
         return $content;
     }
 
-    private static function convert_node_to_markdown(DOMNode $node, int $depth): string {
+    private static function convert_node_to_markdown(DOMNode $node, int $depth): string
+    {
         if (XML_TEXT_NODE === $node->nodeType) {
             return self::normalize_text($node->nodeValue);
         }
@@ -289,8 +321,8 @@ final class Handbro_Post_Markdown {
         }
 
         if (preg_match('/^h([1-6])$/', $tag, $matches)) {
-            $level = (int) $matches[1];
-            $text  = trim(self::convert_children_to_markdown($node, $depth));
+            $level = (int)$matches[1];
+            $text = trim(self::convert_children_to_markdown($node, $depth));
 
             return '' === $text ? '' : "\n\n" . str_repeat('#', $level) . ' ' . $text . "\n\n";
         }
@@ -310,16 +342,16 @@ final class Handbro_Post_Markdown {
                 $text = trim(self::convert_children_to_markdown($node, $depth));
                 return '' === $text ? '' : '*' . $text . '*';
             case 'code':
-                $text = trim((string) $node->textContent);
+                $text = trim((string)$node->textContent);
                 $text = str_replace('`', '\\`', $text);
                 return '' === $text ? '' : '`' . $text . '`';
             case 'pre':
-                $text = rtrim((string) $node->textContent);
+                $text = rtrim((string)$node->textContent);
                 return '' === $text ? '' : "\n\n```\n" . $text . "\n```\n\n";
             case 'a':
                 $href = '';
                 if ($node instanceof DOMElement && $node->hasAttribute('href')) {
-                    $href = trim((string) $node->getAttribute('href'));
+                    $href = trim((string)$node->getAttribute('href'));
                 }
                 $text = trim(self::convert_children_to_markdown($node, $depth));
                 if ('' === $text) {
@@ -334,9 +366,9 @@ final class Handbro_Post_Markdown {
                 $alt = '';
                 $title = '';
                 if ($node instanceof DOMElement) {
-                    $src = trim((string) $node->getAttribute('src'));
-                    $alt = trim((string) $node->getAttribute('alt'));
-                    $title = trim((string) $node->getAttribute('title'));
+                    $src = trim((string)$node->getAttribute('src'));
+                    $alt = trim((string)$node->getAttribute('alt'));
+                    $title = trim((string)$node->getAttribute('title'));
                 }
                 if ('' === $src) {
                     return '';
@@ -351,10 +383,10 @@ final class Handbro_Post_Markdown {
                 if ('' === $text) {
                     return '';
                 }
-                $lines = preg_split('/\R/', $text);
+                $lines = preg_split('/\R/u', $text);
                 $prefixed = array();
                 foreach ($lines as $line) {
-                    $trimmed = trim((string) $line);
+                    $trimmed = trim((string)$line);
                     if ('' === $trimmed) {
                         continue;
                     }
@@ -370,7 +402,8 @@ final class Handbro_Post_Markdown {
         }
     }
 
-    private static function convert_list_to_markdown(DOMNode $node, bool $ordered, int $depth): string {
+    private static function convert_list_to_markdown(DOMNode $node, bool $ordered, int $depth): string
+    {
         $lines = array();
         $index = 1;
 
@@ -384,8 +417,8 @@ final class Handbro_Post_Markdown {
                 continue;
             }
 
-            $item = preg_replace('/\n{2,}/', "\n", $item);
-            $parts = preg_split('/\R/', (string) $item);
+            $item = preg_replace('/\n{2,}/u', "\n", $item);
+            $parts = preg_split('/\R/u', (string)$item);
 
             if (empty($parts)) {
                 continue;
@@ -394,11 +427,11 @@ final class Handbro_Post_Markdown {
             $indent = str_repeat('  ', $depth);
             $marker = $ordered ? $index . '.' : '-';
 
-            $first_line = $indent . $marker . ' ' . trim((string) array_shift($parts));
+            $first_line = $indent . $marker . ' ' . trim((string)array_shift($parts));
             $lines[] = $first_line;
 
             foreach ($parts as $part) {
-                $trimmed = trim((string) $part);
+                $trimmed = trim((string)$part);
                 if ('' === $trimmed) {
                     continue;
                 }
@@ -415,7 +448,8 @@ final class Handbro_Post_Markdown {
         return "\n\n" . implode("\n", $lines) . "\n\n";
     }
 
-    private static function normalize_text(?string $text): string {
+    private static function normalize_text(?string $text): string
+    {
         if (null === $text || '' === $text) {
             return '';
         }
@@ -423,16 +457,18 @@ final class Handbro_Post_Markdown {
         $decoded = html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
         $decoded = preg_replace('/\s+/u', ' ', $decoded);
 
-        return (string) $decoded;
+        return (string)$decoded;
     }
 
-    private static function clean_inline_text(string $text): string {
-        $text = trim((string) $text);
+    private static function clean_inline_text(string $text): string
+    {
+        $text = trim((string)$text);
         $text = str_replace(array("\r", "\n"), ' ', $text);
         return preg_replace('/\s+/u', ' ', $text);
     }
 
-    private static function convert_table_to_markdown(DOMNode $table): string {
+    private static function convert_table_to_markdown(DOMNode $table): string
+    {
         if (!($table instanceof DOMElement)) {
             return '';
         }
@@ -518,7 +554,8 @@ final class Handbro_Post_Markdown {
         return "\n\n" . implode("\n", $lines) . "\n\n";
     }
 
-    private static function extract_table_rows(DOMElement $table): array {
+    private static function extract_table_rows(DOMElement $table): array
+    {
         $rows = array();
         $tr_nodes = $table->getElementsByTagName('tr');
 
@@ -550,7 +587,7 @@ final class Handbro_Post_Markdown {
 
                 $colspan = 1;
                 if ($cell_node->hasAttribute('colspan')) {
-                    $colspan = max(1, (int) $cell_node->getAttribute('colspan'));
+                    $colspan = max(1, (int)$cell_node->getAttribute('colspan'));
                 }
 
                 $row_cells[] = $text;
@@ -574,7 +611,8 @@ final class Handbro_Post_Markdown {
         return $rows;
     }
 
-    private static function is_row_in_table(DOMElement $row, DOMElement $table): bool {
+    private static function is_row_in_table(DOMElement $row, DOMElement $table): bool
+    {
         $node = $row->parentNode;
 
         while ($node instanceof DOMNode) {
@@ -588,7 +626,8 @@ final class Handbro_Post_Markdown {
         return false;
     }
 
-    private static function is_row_in_section(DOMElement $row, string $section_tag, DOMElement $table): bool {
+    private static function is_row_in_section(DOMElement $row, string $section_tag, DOMElement $table): bool
+    {
         $section_tag = strtolower($section_tag);
         $node = $row->parentNode;
 
@@ -611,26 +650,29 @@ final class Handbro_Post_Markdown {
         return false;
     }
 
-    private static function normalize_table_cell(string $text): string {
+    private static function normalize_table_cell(string $text): string
+    {
         if ('' === $text) {
             return '';
         }
 
         $text = str_replace(array("\r\n", "\r"), "\n", $text);
-        $text = preg_replace('/\n{2,}/', "\n", $text);
+        $text = preg_replace('/\n{2,}/u', "\n", $text);
         $text = trim($text);
-        $text = preg_replace('/\s*\n\s*/', ' ', $text);
+        $text = preg_replace('/\s*\n\s*/u', ' ', $text);
         $text = preg_replace('/\s+/u', ' ', $text);
 
-        return trim((string) $text);
+        return trim((string)$text);
     }
 
-    private static function escape_table_cell(string $text): string {
+    private static function escape_table_cell(string $text): string
+    {
         $text = self::clean_inline_text($text);
         return str_replace('|', '\|', $text);
     }
 
-    private static function add_image_meta(array &$images, string $url, string $alt, string $title): void {
+    private static function add_image_meta(array &$images, string $url, string $alt, string $title): void
+    {
         $url = trim($url);
         if ('' === $url) {
             return;
@@ -655,7 +697,8 @@ final class Handbro_Post_Markdown {
         }
     }
 
-    private static function build_image_markdown(string $url, string $alt, string $title): string {
+    private static function build_image_markdown(string $url, string $alt, string $title): string
+    {
         $clean_url = esc_url_raw($url);
         $clean_alt = self::clean_inline_text($alt);
         $clean_title = self::clean_inline_text($title);
@@ -674,6 +717,12 @@ final class Handbro_Post_Markdown {
 
         return '![' . $clean_alt . '](' . $clean_url . ' "' . str_replace('"', '\"', $clean_title) . '")';
     }
+    public static function activate(): void
+    {
+        self::register_rewrites();
+        flush_rewrite_rules();
+    }
 }
 
+register_activation_hook(__FILE__, array('Handbro_Post_Markdown', 'activate'));
 Handbro_Post_Markdown::init();
